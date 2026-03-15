@@ -20,7 +20,8 @@
 import { getCryptoModule } from "./crypto.ts";
 import { waitForBufferDrain } from "./webrtc.ts";
 
-const CHUNK_SIZE = 256 * 1024; // 256 KiB
+const CHUNK_SIZE = 128 * 1024; // 128 KiB — Chrome DataChannel max message size is 256 KiB; after
+// encryption (+16 B auth tag) and protocol header (+9 B), 256 KiB plaintext exceeds that limit.
 
 // ── Message types ────────────────────────────────────────────────────────────
 
