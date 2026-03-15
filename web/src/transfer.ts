@@ -20,7 +20,7 @@
 import { getCryptoModule } from "./crypto.ts";
 import { waitForBufferDrain } from "./webrtc.ts";
 
-const CHUNK_SIZE = 64 * 1024; // 64 KiB
+const CHUNK_SIZE = 256 * 1024; // 256 KiB
 
 // ── Message types ────────────────────────────────────────────────────────────
 
@@ -202,34 +202,51 @@ export class FileSender {
     // ── 3. Chunks ────────────────────────────────────────────────────────────
     const totalBytes = Math.max(files.reduce((n, f) => n + f.size, 0), 1);
     let bytesDone = 0;
-    let chunkIdx = 0;
     const leafHashes: Uint8Array[] = [];
     const t0 = performance.now();
 
+    // Flat list of all chunk descriptors across all files
+    const chunkDescs: { fileIdx: number; file: File; offset: number }[] = [];
     for (let fi = 0; fi < files.length; fi++) {
       const file = files[fi];
-      let offset = 0;
       const end = Math.max(file.size, 1);
+      for (let off = 0; off < end; off += CHUNK_SIZE) {
+        chunkDescs.push({ fileIdx: fi, file, offset: off });
+      }
+    }
 
-      do {
-        if (this.cancelled) throw new Error("Transfer abgebrochen");
+    // Read + encrypt a chunk without blocking the send loop
+    const prepareChunk = async (ci: number) => {
+      const { file, offset } = chunkDescs[ci];
+      const plain  = new Uint8Array(await file.slice(offset, offset + CHUNK_SIZE).arrayBuffer());
+      const cipher = new Uint8Array(wasm.encryptChunk(encKey, nonceSeed, ci, plain));
+      const hash   = new Uint8Array(wasm.hashChunk(plain, ci));
+      return { plain, cipher, hash };
+    };
 
-        const slice  = file.slice(offset, offset + CHUNK_SIZE);
-        const plain  = new Uint8Array(await slice.arrayBuffer());
-        const cipher = new Uint8Array(wasm.encryptChunk(encKey, nonceSeed, chunkIdx, plain));
+    // Pipeline: keep LOOKAHEAD chunks being prepared in parallel with sending
+    const LOOKAHEAD = 2;
+    const pipeline: Promise<{ plain: Uint8Array; cipher: Uint8Array; hash: Uint8Array }>[] = [];
+    for (let i = 0; i < Math.min(LOOKAHEAD, chunkDescs.length); i++) {
+      pipeline.push(prepareChunk(i));
+    }
 
-        leafHashes.push(new Uint8Array(wasm.hashChunk(plain, chunkIdx)));
+    for (let ci = 0; ci < chunkDescs.length; ci++) {
+      if (this.cancelled) throw new Error("Transfer abgebrochen");
 
-        await waitForBufferDrain(this.channel);
-        this.channel.send(pack(MsgType.CHUNK, u32le(chunkIdx), u32le(fi), cipher));
+      // Kick off the next chunk in the background before awaiting the current one
+      const nextIdx = ci + LOOKAHEAD;
+      if (nextIdx < chunkDescs.length) pipeline.push(prepareChunk(nextIdx));
 
-        bytesDone += plain.byteLength;
-        chunkIdx++;
-        offset += CHUNK_SIZE;
+      const { plain, cipher, hash } = await pipeline.shift()!;
+      leafHashes.push(hash);
 
-        const secs = (performance.now() - t0) / 1000;
-        this.onProgress?.(bytesDone, totalBytes, secs > 0 ? bytesDone / secs : 0);
-      } while (offset < end);
+      await waitForBufferDrain(this.channel);
+      this.channel.send(pack(MsgType.CHUNK, u32le(ci), u32le(chunkDescs[ci].fileIdx), cipher));
+
+      bytesDone += plain.byteLength;
+      const secs = (performance.now() - t0) / 1000;
+      this.onProgress?.(bytesDone, totalBytes, secs > 0 ? bytesDone / secs : 0);
     }
 
     // ── 4. Done — send Merkle root, wait for ACK ─────────────────────────────
