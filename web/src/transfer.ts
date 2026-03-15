@@ -205,49 +205,58 @@ export class FileSender {
     let bytesDone = 0;
     const leafHashes: Uint8Array[] = [];
     const t0 = performance.now();
+    let ci = 0;
 
-    // Flat list of all chunk descriptors across all files
-    const chunkDescs: { fileIdx: number; file: File; offset: number }[] = [];
+    // Chrome's File API has a large fixed overhead per arrayBuffer() call (~5–35 ms),
+    // independent of how many bytes are read. Reading in 4 MiB blocks instead of
+    // 128 KiB chunks reduces calls by 32× and amortises that cost.
+    // The next block is prefetched while the current one is being encrypted/sent.
+    const READ_BLOCK = 4 * 1024 * 1024;
+
     for (let fi = 0; fi < files.length; fi++) {
-      const file = files[fi];
-      const end = Math.max(file.size, 1);
-      for (let off = 0; off < end; off += CHUNK_SIZE) {
-        chunkDescs.push({ fileIdx: fi, file, offset: off });
-      }
-    }
-
-    // Read + encrypt a chunk without blocking the send loop
-    const prepareChunk = async (ci: number) => {
-      const { file, offset } = chunkDescs[ci];
-      const plain  = new Uint8Array(await file.slice(offset, offset + CHUNK_SIZE).arrayBuffer());
-      const cipher = new Uint8Array(wasm.encryptChunk(encKey, nonceSeed, ci, plain));
-      const hash   = new Uint8Array(wasm.hashChunk(plain, ci));
-      return { plain, cipher, hash };
-    };
-
-    // Pipeline: keep LOOKAHEAD chunks being prepared in parallel with sending
-    const LOOKAHEAD = 4;
-    const pipeline: Promise<{ plain: Uint8Array; cipher: Uint8Array; hash: Uint8Array }>[] = [];
-    for (let i = 0; i < Math.min(LOOKAHEAD, chunkDescs.length); i++) {
-      pipeline.push(prepareChunk(i));
-    }
-
-    for (let ci = 0; ci < chunkDescs.length; ci++) {
       if (this.cancelled) throw new Error("Transfer abgebrochen");
+      const file = files[fi];
 
-      // Kick off the next chunk in the background before awaiting the current one
-      const nextIdx = ci + LOOKAHEAD;
-      if (nextIdx < chunkDescs.length) pipeline.push(prepareChunk(nextIdx));
+      if (file.size === 0) {
+        // Empty file: send one empty chunk so receiver's chunkCount stays consistent
+        const empty = new Uint8Array(0);
+        const cipher = new Uint8Array(wasm.encryptChunk(encKey, nonceSeed, ci, empty));
+        leafHashes.push(new Uint8Array(wasm.hashChunk(empty, ci)));
+        await waitForBufferDrain(this.channel);
+        this.channel.send(pack(MsgType.CHUNK, u32le(ci), u32le(fi), cipher));
+        ci++;
+        continue;
+      }
 
-      const { plain, cipher, hash } = await pipeline.shift()!;
-      leafHashes.push(hash);
+      let pendingBlock = file.slice(0, READ_BLOCK).arrayBuffer();
 
-      await waitForBufferDrain(this.channel);
-      this.channel.send(pack(MsgType.CHUNK, u32le(ci), u32le(chunkDescs[ci].fileIdx), cipher));
+      for (let blockStart = 0; blockStart < file.size; blockStart += READ_BLOCK) {
+        if (this.cancelled) throw new Error("Transfer abgebrochen");
 
-      bytesDone += plain.byteLength;
-      const secs = (performance.now() - t0) / 1000;
-      this.onProgress?.(bytesDone, totalBytes, secs > 0 ? bytesDone / secs : 0);
+        const blockBuf = new Uint8Array(await pendingBlock);
+
+        // Prefetch next block in the background while we process this one
+        const nextStart = blockStart + READ_BLOCK;
+        if (nextStart < file.size) {
+          pendingBlock = file.slice(nextStart, nextStart + READ_BLOCK).arrayBuffer();
+        }
+
+        for (let off = 0; off < blockBuf.byteLength; off += CHUNK_SIZE) {
+          if (this.cancelled) throw new Error("Transfer abgebrochen");
+
+          const plain  = blockBuf.subarray(off, off + CHUNK_SIZE);
+          const cipher = new Uint8Array(wasm.encryptChunk(encKey, nonceSeed, ci, plain));
+          leafHashes.push(new Uint8Array(wasm.hashChunk(plain, ci)));
+
+          await waitForBufferDrain(this.channel);
+          this.channel.send(pack(MsgType.CHUNK, u32le(ci), u32le(fi), cipher));
+
+          bytesDone += plain.byteLength;
+          ci++;
+          const secs = (performance.now() - t0) / 1000;
+          this.onProgress?.(bytesDone, totalBytes, secs > 0 ? bytesDone / secs : 0);
+        }
+      }
     }
 
     // ── 4. Done — send Merkle root, wait for ACK ─────────────────────────────
