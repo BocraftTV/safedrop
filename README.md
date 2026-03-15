@@ -1,29 +1,67 @@
-# SecureDrop
+# SafeDrop
 
 > Zero-Knowledge, Browser-basiertes P2P File Sharing — Ende-zu-Ende verschlüsselt, kein Server sieht je Deine Daten.
 
-**Status:** Phase 1 — Projekt-Setup ✅
+**🔒 Live:** [bocrafttv.github.io/safedrop](https://bocrafttv.github.io/safedrop/)
 
 ---
 
-## Was ist SecureDrop?
+## Was ist SafeDrop?
 
-SecureDrop überträgt Dateien **direkt von Browser zu Browser** — ohne Server, ohne Account, ohne Installation. Der Kern der Kryptographie läuft als **WebAssembly-Modul** (kompiliert aus Rust) direkt im Browser:
+SafeDrop überträgt Dateien **direkt von Browser zu Browser** — ohne Server, ohne Account, ohne Installation. Der Kern der Kryptographie läuft als **WebAssembly-Modul** (kompiliert aus Rust) direkt im Browser des Nutzers.
 
-- **X25519 ECDH** — ephemerer Schlüsselaustausch pro Transfer
-- **HKDF-SHA256** — Key Derivation
-- **ChaCha20-Poly1305** — AEAD-Verschlüsselung jedes Chunks
-- **BLAKE3 + Merkle Tree** — Dateiintegrität
+### Workflow
 
-## Architektur
+1. Sender öffnet SafeDrop, wählt Dateien per Drag & Drop
+2. App generiert einen einmaligen 6-stelligen Code + QR-Code
+3. Sender teilt den Code (Chat, SMS, mündlich)
+4. Empfänger öffnet SafeDrop, gibt den Code ein
+5. WebRTC-Verbindung wird direkt aufgebaut — kein Server in der Mitte
+6. Beide Seiten sehen einen **Sicherheitscode** (4 Emoji) zur MITM-Verifikation
+7. Empfänger bestätigt die Übertragung → verschlüsselter Transfer startet
+8. Nach dem Transfer werden alle Schlüssel verworfen — nichts bleibt zurück
+
+---
+
+## Krypto-Protokoll
 
 ```
-Browser A (Sender) ←——— WebRTC DataChannel (E2E verschlüsselt) ———→ Browser B (Empfänger)
-         ↓                                                                    ↓
-  WASM Krypto-Core                                                   WASM Krypto-Core
-         ↓                                                                    ↓
-         └——————— Cloudflare Worker (Signaling, SDP-Only) ———————————————┘
+Sender                                              Empfänger
+  │                                                      │
+  │  1. X25519 Ephemeral Keypair                        │
+  │     send pubkey ────────────────────────────────►   │
+  │                                                      │
+  │                    ◄──────────── send pubkey         │
+  │                                  X25519 Keypair      │
+  │                                                      │
+  │  2. ECDH → Shared Secret                            │
+  │     HKDF-SHA256(secret, salt) → enc_key + nonce     │
+  │                                                      │
+  │  3. Header senden (Dateiname, Größe, Chunk-Anzahl)  │
+  │     ────────────────────────────────────────────►   │
+  │                                                      │
+  │  4. Chunks: ChaCha20-Poly1305(enc_key, nonce_i)     │
+  │     ════════════════════════════════════════════►   │
+  │                                                      │
+  │  5. Merkle Root senden (BLAKE3-Hashes aller Chunks) │
+  │     ────────────────────────────────────────────►   │
+  │                                ✓ Merkle Root verifiziert
+  │                    ◄──────────── ACK                 │
+  │                                                      │
+  │  6. Alle Schlüssel werden verworfen                 │
 ```
+
+### Sicherheitsebenen
+
+| Ebene | Technologie | Schutz |
+|---|---|---|
+| Transport | WebRTC DTLS | Automatisch durch Browser |
+| Application E2E | ChaCha20-Poly1305 | Eigene Verschlüsselungsschicht |
+| Integrität | BLAKE3 + Merkle Tree | Manipulation pro Chunk erkennbar |
+| Forward Secrecy | X25519 Ephemeral | Vergangene Transfers bleiben sicher |
+| MITM-Verifikation | SAS (4 Emoji) | Nutzer können Sicherheitscode vergleichen |
+
+---
 
 ## Tech Stack
 
@@ -31,112 +69,85 @@ Browser A (Sender) ←——— WebRTC DataChannel (E2E verschlüsselt) ——�
 |---|---|
 | Krypto-Core | Rust → WebAssembly (wasm-pack) |
 | Frontend | TypeScript + Vite |
-| Signaling | Cloudflare Worker (Durable Objects) |
+| UI | Vanilla HTML/CSS |
+| Signaling | Cloudflare Worker + Durable Objects |
 | Hosting | GitHub Pages |
 | CI/CD | GitHub Actions |
 
-## Setup (Entwicklung)
+---
+
+## Lokale Entwicklung
 
 ### Voraussetzungen
 
-- [Rust](https://rustup.rs/) (stable + `wasm32-unknown-unknown` target)
+- [Rust](https://rustup.rs/) (stable)
 - [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/)
 - [Node.js](https://nodejs.org/) 18+
-- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/) (für Signaling)
 
-### Schritt 1: Rust installieren & WASM target hinzufügen
-
-```bash
-rustup target add wasm32-unknown-unknown
-```
-
-### Schritt 2: WASM-Modul bauen
+### Setup
 
 ```bash
-wasm-pack build --target web --out-dir ../../web/src/wasm crates/crypto-core
-```
-
-Oder via npm script:
-
-```bash
+# 1. WASM-Modul bauen
 cd web && npm run wasm:build
-```
 
-### Schritt 3: Frontend starten
-
-```bash
-cd web
+# 2. Frontend starten
 npm install
 npm run dev
 ```
 
-Öffne `http://localhost:5173` — die Seite zeigt den WASM Smoke Test.
+Öffne `http://localhost:5173`
 
-### Rust Tests ausführen
+### Rust Tests
 
 ```bash
 cargo test --workspace
 ```
 
-### Signaling Server lokal starten (Phase 3)
-
-```bash
-cd signaling
-npm install -g wrangler
-wrangler dev
-```
+---
 
 ## Projektstruktur
 
 ```
-securedrop/
-├── .github/workflows/deploy.yml    # CI: Test + WASM Build + GitHub Pages Deploy
+safedrop/
+├── .github/workflows/deploy.yml    # CI: Rust Tests + WASM Build + Deploy
 ├── crates/
 │   └── crypto-core/                # Rust → WASM Krypto-Core
 │       ├── src/
-│       │   ├── lib.rs              # WASM Entry Point + Smoke Test Exports
 │       │   ├── keys.rs             # X25519 Keypair + ECDH
 │       │   ├── cipher.rs           # ChaCha20-Poly1305 Encrypt/Decrypt
 │       │   ├── kdf.rs              # HKDF-SHA256 Key Derivation
-│       │   ├── chunks.rs           # BLAKE3 + Merkle Tree + Chunking
-│       │   └── utils.rs            # Panic Hook + Error Types
+│       │   ├── chunks.rs           # BLAKE3 + Merkle Tree
+│       │   └── utils.rs            # Panic Hook
 │       └── tests/                  # Rust Integration Tests
 ├── web/                            # TypeScript/Vite Frontend
-│   ├── index.html
 │   ├── src/
-│   │   ├── main.ts                 # App Entry + Phase 1 Smoke Test
+│   │   ├── main.ts                 # App Entry Point
 │   │   ├── crypto.ts               # WASM Bindings
-│   │   ├── webrtc.ts               # RTCPeerConnection Wrapper
-│   │   ├── signaling.ts            # Signaling Client
+│   │   ├── connection.ts           # WebRTC + Signaling Orchestration
 │   │   ├── transfer.ts             # File Transfer Protocol
-│   │   ├── ui.ts                   # UI Logik
+│   │   ├── ui.ts                   # UI Logic
 │   │   └── styles.css
 │   └── src/wasm/                   # wasm-pack Output (generated, gitignored)
 ├── signaling/                      # Cloudflare Worker
-│   ├── wrangler.toml
 │   └── src/index.ts                # WebSocket Relay + Room Management
 └── Cargo.toml                      # Workspace Root
 ```
 
-## Implementierungsplan
+---
+
+## Status
 
 | Phase | Status | Beschreibung |
 |---|---|---|
 | Phase 1 — Setup | ✅ | Monorepo, WASM Smoke Test, CI/CD |
-| Phase 2 — Krypto-Core | 🔜 | X25519, ChaCha20, BLAKE3 vollständig |
-| Phase 3 — Signaling | 🔜 | Cloudflare Worker, WebSocket Relay |
-| Phase 4 — WebRTC | 🔜 | P2P DataChannel |
-| Phase 5 — File Transfer | 🔜 | Verschlüsselter Dateitransfer |
-| Phase 6 — UI | 🔜 | Sender/Empfänger UI, QR-Code |
-| Phase 7 — Hardening | 🔜 | CSP, Rate Limiting, E2E Tests |
+| Phase 2 — Krypto-Core | ✅ | X25519, ChaCha20-Poly1305, HKDF, BLAKE3/Merkle |
+| Phase 3 — Signaling | ✅ | Cloudflare Worker, WebSocket Relay |
+| Phase 4 — WebRTC | ✅ | P2P DataChannel, ICE/STUN |
+| Phase 5 — File Transfer | ✅ | Binärprotokoll, Backpressure, Merkle-Verifikation |
+| Phase 6 — UI | ✅ | QR-Code, SAS-Fingerprint, Bestätigung, ETA, Abbrechen |
+| Phase 7 — Hardening | 🔜 | Rate Limiting, TURN Fallback, E2E Tests |
 
-## Sicherheit
-
-Jeder Transfer ist doppelt verschlüsselt:
-1. **WebRTC DTLS** — Transport-Verschlüsselung
-2. **ChaCha20-Poly1305** — Application-Level E2E (eigene Schicht)
-
-Der Signaling-Server sieht **nur** Public Keys und SDP-Handshake — niemals Dateiinhalt oder Schlüssel.
+---
 
 ## Lizenz
 
