@@ -1,0 +1,20 @@
+{
+  "name": "securedrop-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "wasm:build": "cd ../crates/crypto-core && wasm-pack build --target web --out-dir ../../web/src/wasm"
+  },
+  "devDependencies": {
+    "@types/qrcode": "^1.5.6",
+    "typescript": "^5.4.5",
+    "vite": "^5.2.11"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.3"
+  }
+}

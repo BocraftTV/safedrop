@@ -1,0 +1,23 @@
+# Rust
+target/
+Cargo.lock
+
+# Node / Web
+node_modules/
+dist/
+web/dist/
+
+# wasm-pack output
+crates/crypto-core/pkg/
+
+# Cloudflare Worker
+signaling/.wrangler/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/settings.json
+.idea/
+*.swp

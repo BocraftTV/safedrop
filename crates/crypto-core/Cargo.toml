@@ -1,0 +1,27 @@
+[package]
+name = "crypto-core"
+version = "0.1.0"
+edition = "2021"
+description = "SecureDrop crypto core: X25519 + ChaCha20-Poly1305 + BLAKE3 Merkle — compiled to WebAssembly"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = { workspace = true }
+js-sys = { workspace = true }
+console_error_panic_hook = { workspace = true }
+getrandom = { workspace = true }
+rand_core = { workspace = true }
+x25519-dalek = { workspace = true }
+chacha20poly1305 = { workspace = true }
+hkdf = { workspace = true }
+sha2 = { workspace = true }
+blake3 = { workspace = true }
+zeroize = { workspace = true }
+serde = { workspace = true }
+serde-wasm-bindgen = { workspace = true }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"

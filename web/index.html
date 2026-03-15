@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' wss: https:; style-src 'self' 'unsafe-inline';"
+    />
+    <title>SecureDrop — P2P Encrypted File Sharing</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔒</text></svg>" />
+  </head>
+  <body>
+    <div id="app">
+
+      <header>
+        <div class="logo">
+          <span class="lock-icon" aria-hidden="true">🔒</span>
+          <h1>SecureDrop</h1>
+        </div>
+        <p class="tagline">Ende-zu-Ende verschlüsselt · Browser zu Browser · Kein Server</p>
+      </header>
+
+      <!-- WASM loading indicator (hidden once ready) -->
+      <div id="wasm-loading" class="status loading">Lädt Krypto-Modul...</div>
+
+      <!-- ── Mode selection ───────────────────────────────────────────── -->
+      <section id="mode-select" class="card" hidden>
+        <div class="mode-buttons">
+          <button id="btn-sender" class="mode-btn">
+            <span class="mode-icon">📤</span>
+            <span>Datei senden</span>
+          </button>
+          <button id="btn-receiver" class="mode-btn">
+            <span class="mode-icon">📥</span>
+            <span>Datei empfangen</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- ── Sender flow ──────────────────────────────────────────────── -->
+      <section id="sender-view" class="card" hidden>
+        <div class="card-header">
+          <h2>Datei senden</h2>
+          <button id="sender-back" class="back-btn" title="Zurück">← Zurück</button>
+        </div>
+
+        <!-- Step 1: File selection -->
+        <div id="sender-step-files">
+          <div id="drop-zone" class="drop-zone" role="button" tabindex="0"
+               aria-label="Dateien auswählen oder hierher ziehen">
+            <div class="drop-zone-inner">
+              <span class="drop-icon" aria-hidden="true">📁</span>
+              <p>Dateien hierher ziehen oder klicken</p>
+              <p class="drop-hint">Mehrere Dateien möglich</p>
+            </div>
+            <input type="file" id="file-input" multiple hidden />
+          </div>
+          <div id="file-list" hidden></div>
+          <button id="btn-connect-sender" disabled>Verbindung starten</button>
+        </div>
+
+        <!-- Step 2: Show code + wait for peer -->
+        <div id="sender-step-code" hidden>
+          <p class="step-label">Teile diesen Code mit dem Empfänger:</p>
+          <div id="share-code" class="share-code" title="Klicken zum Kopieren"></div>
+          <div class="qr-wrap">
+            <canvas id="qr-canvas"></canvas>
+          </div>
+          <p id="sender-status" class="status loading">Warte auf Empfänger...</p>
+        </div>
+
+        <!-- Step 3: Connected / transferring -->
+        <div id="sender-step-transfer" hidden>
+          <div id="sender-connection-status" class="status ok">🔒 Verbunden — Ende-zu-Ende verschlüsselt</div>
+          <div id="sender-sas" class="sas-box" hidden>
+            <span class="sas-label">🔐 Sicherheitscode</span>
+            <div id="sender-sas-emoji" class="sas-emoji"></div>
+            <p class="sas-hint">Stimmt dieser Code mit dem des Empfängers überein?</p>
+          </div>
+          <div class="progress-bar-wrap">
+            <div id="sender-progress-bar" class="progress-bar" role="progressbar"
+                 aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
+          </div>
+          <p id="sender-progress-label">Startet...</p>
+          <button id="btn-cancel-sender" class="cancel-btn">✕ Abbrechen</button>
+        </div>
+      </section>
+
+      <!-- ── Receiver flow ────────────────────────────────────────────── -->
+      <section id="receiver-view" class="card" hidden>
+        <div class="card-header">
+          <h2>Datei empfangen</h2>
+          <button id="receiver-back" class="back-btn" title="Zurück">← Zurück</button>
+        </div>
+
+        <!-- Step 1: Enter code -->
+        <div id="receiver-step-code">
+          <label for="code-input">Code vom Sender eingeben:</label>
+          <input
+            type="text"
+            id="code-input"
+            maxlength="6"
+            placeholder="abc123"
+            autocomplete="off"
+            autocorrect="off"
+            spellcheck="false"
+          />
+          <button id="btn-connect-receiver">Verbinden</button>
+          <p id="receiver-error" class="status error" hidden></p>
+        </div>
+
+        <!-- Step 2: Connected / confirming / receiving -->
+        <div id="receiver-step-transfer" hidden>
+          <div id="receiver-connection-status" class="status ok">🔒 Verbunden — Ende-zu-Ende verschlüsselt</div>
+
+          <!-- Confirmation panel (shown after header arrives) -->
+          <div id="receiver-confirm" hidden>
+            <p class="step-label">Eingehende Dateien:</p>
+            <div id="receiver-incoming-files"></div>
+            <div id="receiver-sas" class="sas-box" hidden>
+              <span class="sas-label">🔐 Sicherheitscode</span>
+              <div id="receiver-sas-emoji" class="sas-emoji"></div>
+              <p class="sas-hint">Stimmt dieser Code mit dem des Senders überein?</p>
+            </div>
+            <button id="btn-accept-transfer" class="primary">✓ Dateien annehmen</button>
+          </div>
+
+          <!-- Progress (shown after confirmation) -->
+          <div id="receiver-progress" hidden>
+            <div class="progress-bar-wrap">
+              <div id="receiver-progress-bar" class="progress-bar" role="progressbar"
+                   aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
+            </div>
+            <p id="receiver-progress-label">Warte auf Datei...</p>
+            <button id="btn-cancel-receiver" class="cancel-btn">✕ Abbrechen</button>
+          </div>
+
+          <div id="download-area" hidden></div>
+        </div>
+      </section>
+
+      <footer>
+        <p>Ende-zu-Ende verschlüsselt · Kein Server · Keine Accounts · Open Source</p>
+      </footer>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
