@@ -18,8 +18,8 @@ export const ICE_SERVERS: RTCIceServer[] = [
  * A large HIGH_WATER fills the bandwidth-delay product on high-latency links
  * (e.g. cross-network: 50 ms RTT × 100 Mbps ≈ 6 MB in flight needed).
  */
-export const BUFFER_HIGH_WATER =  8 * 1024 * 1024; //  8 MiB — keep sending up to here (Chrome's hard queue limit is 16 MiB)
-export const BUFFER_LOW_WATER  =  2 * 1024 * 1024; //  2 MiB — resume after draining to here
+export const BUFFER_HIGH_WATER = 4 * 1024 * 1024; // 4 MiB — keep sending up to here (Chrome's hard queue limit is 16 MiB)
+export const BUFFER_LOW_WATER  = 1 * 1024 * 1024; // 1 MiB — resume after draining to here
 
 /**
  * Block until the DataChannel buffer has room (drops below LOW_WATER).
