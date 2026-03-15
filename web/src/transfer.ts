@@ -226,7 +226,7 @@ export class FileSender {
     };
 
     // Pipeline: keep LOOKAHEAD chunks being prepared in parallel with sending
-    const LOOKAHEAD = 2;
+    const LOOKAHEAD = 8;
     const pipeline: Promise<{ plain: Uint8Array; cipher: Uint8Array; hash: Uint8Array }>[] = [];
     for (let i = 0; i < Math.min(LOOKAHEAD, chunkDescs.length); i++) {
       pipeline.push(prepareChunk(i));

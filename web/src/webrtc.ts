@@ -8,17 +8,26 @@ export const ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun1.l.google.com:19302" },
 ];
 
-/** Maximum DataChannel buffer before we pause sending (backpressure). */
-export const BUFFER_HIGH_WATER = 16 * 1024 * 1024; // 16 MiB
-export const BUFFER_LOW_WATER  = 1 * 1024 * 1024;  // 1 MiB
+/**
+ * Backpressure thresholds for the DataChannel send buffer.
+ *
+ * We keep sending as long as bufferedAmount < HIGH_WATER.
+ * Once it hits HIGH_WATER we pause and wait until it drains to LOW_WATER.
+ * The gap between the two prevents rapid on/off toggling.
+ *
+ * A large HIGH_WATER fills the bandwidth-delay product on high-latency links
+ * (e.g. cross-network: 50 ms RTT × 100 Mbps ≈ 6 MB in flight needed).
+ */
+export const BUFFER_HIGH_WATER = 16 * 1024 * 1024; // 16 MiB — keep sending up to here
+export const BUFFER_LOW_WATER  =  4 * 1024 * 1024; //  4 MiB — resume after draining to here
 
 /**
- * Wait until the DataChannel's bufferedAmount drops below the low-water mark.
- * Call before sending each chunk to avoid overwhelming the buffer.
+ * Block until the DataChannel buffer has room (drops below LOW_WATER).
+ * Call before each send; resolves immediately while buffer < HIGH_WATER.
  */
 export function waitForBufferDrain(channel: RTCDataChannel): Promise<void> {
   if (channel.readyState !== "open") return Promise.reject(new Error("Verbindung unterbrochen"));
-  if (channel.bufferedAmount <= BUFFER_LOW_WATER) return Promise.resolve();
+  if (channel.bufferedAmount < BUFFER_HIGH_WATER) return Promise.resolve();
   return new Promise((resolve, reject) => {
     channel.bufferedAmountLowThreshold = BUFFER_LOW_WATER;
     const cleanup = () => {
