@@ -530,3 +530,6 @@ button.primary {
   .mode-buttons { grid-template-columns: 1fr; }
   .sas-emoji { font-size: 1.5rem; }
 }
+
+/* Ensure the HTML hidden attribute always wins over display:flex/block rules */
+[hidden] { display: none !important; }
