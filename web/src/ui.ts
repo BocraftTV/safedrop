@@ -69,6 +69,7 @@ function initSenderCard(): void {
   const mgr = new ConnectionManager();
   let selectedFiles: File[] = [];
   let activeSender: FileSender | null = null;
+  let currentShareUrl = "";
 
   // File selection
   const dropZone = el<HTMLDivElement>("drop-zone");
@@ -113,7 +114,8 @@ function initSenderCard(): void {
         show("sender-step-code");
         el("share-code").textContent = code;
         setStatus(el("sender-status"), "Warte auf Empfänger...", "loading");
-        void QRCode.toCanvas(el<HTMLCanvasElement>("qr-canvas"), code, {
+        currentShareUrl = `${window.location.origin}${window.location.pathname}?code=${code}`;
+        void QRCode.toCanvas(el<HTMLCanvasElement>("qr-canvas"), currentShareUrl, {
           width: 200,
           margin: 2,
           color: { dark: "#000000", light: "#ffffff" },
@@ -132,6 +134,16 @@ function initSenderCard(): void {
       const orig = el("share-code").textContent;
       el("share-code").textContent = "Kopiert!";
       setTimeout(() => { el("share-code").textContent = orig; }, 1400);
+    });
+  });
+
+  el("btn-copy-link").addEventListener("click", () => {
+    if (!currentShareUrl) return;
+    navigator.clipboard.writeText(currentShareUrl).then(() => {
+      const btn = el("btn-copy-link");
+      const orig = btn.textContent;
+      btn.textContent = "Kopiert!";
+      setTimeout(() => { btn.textContent = orig; }, 1400);
     });
   });
 
@@ -213,6 +225,11 @@ function initReceiverCard(): void {
   let activeReceiver: FileReceiver | null = null;
 
   const codeInput = el<HTMLInputElement>("code-input");
+
+  const urlCode = new URLSearchParams(window.location.search).get("code");
+  if (urlCode) {
+    codeInput.value = urlCode.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 6);
+  }
 
   codeInput.addEventListener("input", () => {
     codeInput.value = codeInput.value.toLowerCase().replace(/[^a-z0-9]/g, "");
