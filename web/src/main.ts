@@ -1,8 +1,5 @@
 /**
  * SecureDrop — App Entry Point
- *
- * 1. Load + verify WASM crypto-core
- * 2. Hand off to UI
  */
 
 import { initCrypto, getCryptoModule } from "./crypto.ts";
@@ -14,15 +11,13 @@ async function main(): Promise<void> {
   try {
     await initCrypto();
 
-    // Quick sanity check
     const wasm = getCryptoModule();
     if (wasm.smokeTestAdd(1, 1) !== 2) throw new Error("WASM smoke test failed");
 
+    // Hide loader, reveal both cards
     loadingEl.hidden = true;
-
-    // Show the app
-    const modeEl = document.getElementById("mode-select") as HTMLElement;
-    modeEl.hidden = false;
+    (document.getElementById("sender-view") as HTMLElement).hidden = false;
+    (document.getElementById("receiver-view") as HTMLElement).hidden = false;
 
     initApp();
 

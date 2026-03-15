@@ -1,15 +1,13 @@
 /**
  * UI Logic — wires DOM events to ConnectionManager + FileSender/FileReceiver.
+ *
+ * Both sender and receiver cards are always visible and independent.
+ * Each manages its own ConnectionManager instance.
  */
 
 import QRCode from "qrcode";
-import { ConnectionManager, type AppState } from "./connection.ts";
+import { ConnectionManager } from "./connection.ts";
 import { FileSender, FileReceiver, type DownloadableFile, type TransferFileInfo } from "./transfer.ts";
-
-// ── Module-level transfer refs (needed by cancel + confirm handlers) ──────────
-
-let _activeSender: FileSender | null = null;
-let _activeReceiver: FileReceiver | null = null;
 
 // ── DOM helpers ───────────────────────────────────────────────────────────────
 
@@ -54,102 +52,25 @@ function setStatus(el: HTMLElement, text: string, type: "ok" | "loading" | "erro
   el.hidden = false;
 }
 
+function esc(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 // ── App init ──────────────────────────────────────────────────────────────────
 
 export function initApp(): void {
+  initSenderCard();
+  initReceiverCard();
+}
+
+// ── Sender card ───────────────────────────────────────────────────────────────
+
+function initSenderCard(): void {
   const mgr = new ConnectionManager();
   let selectedFiles: File[] = [];
-  let isSenderMode = false;
+  let activeSender: FileSender | null = null;
 
-  // ── Mode selection ──────────────────────────────────────────────────────────
-
-  el("btn-sender").addEventListener("click", () => {
-    isSenderMode = true;
-    hide("mode-select");
-    show("sender-view");
-  });
-
-  el("btn-receiver").addEventListener("click", () => {
-    isSenderMode = false;
-    hide("mode-select");
-    show("receiver-view");
-  });
-
-  el("sender-back").addEventListener("click", () => {
-    _activeSender?.cancel();
-    mgr.disconnect();
-    resetSender();
-    hide("sender-view");
-    show("mode-select");
-  });
-
-  el("receiver-back").addEventListener("click", () => {
-    _activeReceiver?.cancel();
-    mgr.disconnect();
-    resetReceiver();
-    hide("receiver-view");
-    show("mode-select");
-  });
-
-  // ── Cancel buttons ──────────────────────────────────────────────────────────
-
-  el("btn-cancel-sender").addEventListener("click", () => {
-    _activeSender?.cancel();
-    mgr.disconnect();
-    resetSender();
-    hide("sender-view");
-    show("mode-select");
-  });
-
-  el("btn-cancel-receiver").addEventListener("click", () => {
-    _activeReceiver?.cancel();
-    mgr.disconnect();
-    resetReceiver();
-    hide("receiver-view");
-    show("mode-select");
-  });
-
-  // ── Receiver confirmation ───────────────────────────────────────────────────
-
-  el("btn-accept-transfer").addEventListener("click", () => {
-    hide("receiver-confirm");
-    show("receiver-progress");
-    _activeReceiver?.confirm();
-  });
-
-  // ── State change ────────────────────────────────────────────────────────────
-
-  mgr.onStateChange = (state: AppState, detail?: string) => {
-    if (state === "webrtc") {
-      if (isSenderMode) {
-        setStatus(el("sender-status"), "Baut Verbindung auf...", "loading");
-      }
-    }
-    if (state === "error") {
-      const msg = `❌ ${detail ?? "Verbindungsfehler"}`;
-      if (isSenderMode) {
-        setStatus(el("sender-status"), msg, "error");
-        show("sender-step-code");
-      } else {
-        setStatus(el("receiver-error"), msg, "error");
-      }
-    }
-  };
-
-  mgr.onChannelOpen = (channel) => {
-    if (isSenderMode) {
-      hide("sender-step-code");
-      show("sender-step-transfer");
-      startSending(channel, selectedFiles);
-    } else {
-      hide("receiver-step-code");
-      show("receiver-step-transfer");
-      startReceiving(channel);
-    }
-  };
-
-  // ── Sender: file selection ──────────────────────────────────────────────────
-
+  // File selection
   const dropZone = el<HTMLDivElement>("drop-zone");
   const fileInput = el<HTMLInputElement>("file-input");
 
@@ -192,7 +113,6 @@ export function initApp(): void {
         show("sender-step-code");
         el("share-code").textContent = code;
         setStatus(el("sender-status"), "Warte auf Empfänger...", "loading");
-        // QR code — non-critical, fire-and-forget
         void QRCode.toCanvas(el<HTMLCanvasElement>("qr-canvas"), code, {
           width: 200,
           margin: 2,
@@ -215,7 +135,82 @@ export function initApp(): void {
     });
   });
 
-  // ── Receiver: enter code ────────────────────────────────────────────────────
+  el("btn-cancel-sender").addEventListener("click", () => {
+    activeSender?.cancel();
+    mgr.disconnect();
+    resetSenderCard();
+  });
+
+  mgr.onStateChange = (_state, detail) => {
+    if (_state === "webrtc") {
+      setStatus(el("sender-status"), "Baut Verbindung auf...", "loading");
+    }
+    if (_state === "error") {
+      setStatus(el("sender-status"), `❌ ${detail ?? "Verbindungsfehler"}`, "error");
+      show("sender-step-code");
+    }
+  };
+
+  mgr.onChannelOpen = (channel) => {
+    hide("sender-step-code");
+    show("sender-step-transfer");
+
+    const connStatus = el("sender-connection-status");
+    setStatus(connStatus, "🔒 Verbunden — E2E verschlüsselt", "ok");
+
+    const sender = new FileSender(channel);
+    activeSender = sender;
+
+    sender.onKeyFingerprint = (fp) => {
+      el("sender-sas-emoji").textContent = fp;
+      show("sender-sas");
+    };
+
+    sender.onProgress = (done, total, bps) => {
+      const eta = bps > 0 && done < total ? ` — noch ${formatEta((total - done) / bps)}` : "";
+      setProgress(
+        "sender-progress-bar", "sender-progress-label",
+        done / total,
+        `${formatBytes(done)} / ${formatBytes(total)} — ${formatSpeed(bps)}${eta}`,
+      );
+    };
+
+    sender.onDone = () => {
+      setProgress("sender-progress-bar", "sender-progress-label", 1, "Übertragung abgeschlossen ✓");
+      setStatus(connStatus, "✅ Alle Dateien übertragen und verifiziert", "ok");
+      hide("btn-cancel-sender");
+    };
+
+    sender.onError = (e) => {
+      setStatus(connStatus, `❌ ${e.message}`, "error");
+      hide("btn-cancel-sender");
+    };
+
+    sender.start(selectedFiles);
+  };
+
+  function resetSenderCard(): void {
+    activeSender = null;
+    show("sender-step-files");
+    hide("sender-step-code");
+    hide("sender-step-transfer");
+    el("sender-sas-emoji").textContent = "";
+    el("sender-sas").hidden = true;
+    el("btn-cancel-sender").hidden = false;
+    fileInput.value = "";
+    const list = el("file-list");
+    list.innerHTML = "";
+    list.hidden = true;
+    el<HTMLButtonElement>("btn-connect-sender").disabled = true;
+    selectedFiles = [];
+  }
+}
+
+// ── Receiver card ─────────────────────────────────────────────────────────────
+
+function initReceiverCard(): void {
+  const mgr = new ConnectionManager();
+  let activeReceiver: FileReceiver | null = null;
 
   const codeInput = el<HTMLInputElement>("code-input");
 
@@ -243,92 +238,94 @@ export function initApp(): void {
       el<HTMLButtonElement>("btn-connect-receiver").disabled = false;
     }
   });
+
+  el("btn-cancel-receiver").addEventListener("click", () => {
+    activeReceiver?.cancel();
+    mgr.disconnect();
+    resetReceiverCard();
+  });
+
+  el("btn-accept-transfer").addEventListener("click", () => {
+    hide("receiver-confirm");
+    show("receiver-progress");
+    activeReceiver?.confirm();
+  });
+
+  mgr.onStateChange = (_state, detail) => {
+    if (_state === "error") {
+      setStatus(el("receiver-error"), `❌ ${detail ?? "Verbindungsfehler"}`, "error");
+    }
+  };
+
+  mgr.onChannelOpen = (channel) => {
+    hide("receiver-step-code");
+    show("receiver-step-transfer");
+
+    const connStatus = el("receiver-connection-status");
+    setStatus(connStatus, "🔒 Verbunden — warte auf Dateien...", "ok");
+
+    const receiver = new FileReceiver(channel);
+    activeReceiver = receiver;
+    receiver.requireConfirmation = true;
+
+    receiver.onKeyFingerprint = (fp) => {
+      el("receiver-sas-emoji").textContent = fp;
+      show("receiver-sas");
+    };
+
+    receiver.onHeaderReceived = (files: TransferFileInfo[]) => {
+      const list = el("receiver-incoming-files");
+      const totalSize = files.reduce((n, f) => n + f.size, 0);
+      list.innerHTML = files
+        .map(f => `<div class="file-item"><span class="file-name">${esc(f.name)}</span><span class="file-size">${formatBytes(f.size)}</span></div>`)
+        .join("") + `<p class="file-total">Gesamt: ${formatBytes(totalSize)}</p>`;
+      show("receiver-confirm");
+    };
+
+    receiver.onProgress = (done, total, bps) => {
+      const eta = bps > 0 && done < total ? ` — noch ${formatEta((total - done) / bps)}` : "";
+      setProgress(
+        "receiver-progress-bar", "receiver-progress-label",
+        done / total,
+        `${formatBytes(done)} / ${formatBytes(total)} — ${formatSpeed(bps)}${eta}`,
+      );
+    };
+
+    receiver.onFilesReady = (files: DownloadableFile[]) => {
+      setProgress("receiver-progress-bar", "receiver-progress-label", 1, "✓ Empfangen & verifiziert");
+      setStatus(connStatus, "✅ Integrität bestätigt (Merkle root stimmt überein)", "ok");
+      hide("btn-cancel-receiver");
+      showDownloads(files);
+    };
+
+    receiver.onError = (e) => {
+      setStatus(connStatus, `❌ ${e.message}`, "error");
+      hide("btn-cancel-receiver");
+    };
+
+    receiver.receive();
+  };
+
+  function resetReceiverCard(): void {
+    activeReceiver = null;
+    show("receiver-step-code");
+    hide("receiver-step-transfer");
+    el("receiver-confirm").hidden = true;
+    el("receiver-progress").hidden = true;
+    el("receiver-sas-emoji").textContent = "";
+    el("receiver-sas").hidden = true;
+    el("receiver-incoming-files").innerHTML = "";
+    el("btn-cancel-receiver").hidden = false;
+    codeInput.value = "";
+    el<HTMLButtonElement>("btn-connect-receiver").disabled = false;
+    el("receiver-error").hidden = true;
+    const area = el("download-area");
+    area.innerHTML = "";
+    area.hidden = true;
+  }
 }
 
-// ── Transfer: Sender ──────────────────────────────────────────────────────────
-
-function startSending(channel: RTCDataChannel, files: File[]): void {
-  const connStatus = el("sender-connection-status");
-  setStatus(connStatus, "🔒 Verbunden — E2E verschlüsselt", "ok");
-
-  const sender = new FileSender(channel);
-  _activeSender = sender;
-
-  sender.onKeyFingerprint = (fp) => {
-    el("sender-sas-emoji").textContent = fp;
-    show("sender-sas");
-  };
-
-  sender.onProgress = (done, total, bps) => {
-    const eta = bps > 0 && done < total ? ` — noch ${formatEta((total - done) / bps)}` : "";
-    setProgress(
-      "sender-progress-bar", "sender-progress-label",
-      done / total,
-      `${formatBytes(done)} / ${formatBytes(total)} — ${formatSpeed(bps)}${eta}`,
-    );
-  };
-
-  sender.onDone = () => {
-    setProgress("sender-progress-bar", "sender-progress-label", 1, "Übertragung abgeschlossen ✓");
-    setStatus(connStatus, "✅ Alle Dateien übertragen und verifiziert", "ok");
-    hide("btn-cancel-sender");
-  };
-
-  sender.onError = (e) => {
-    setStatus(connStatus, `❌ ${e.message}`, "error");
-    hide("btn-cancel-sender");
-  };
-
-  sender.start(files);
-}
-
-// ── Transfer: Receiver ────────────────────────────────────────────────────────
-
-function startReceiving(channel: RTCDataChannel): void {
-  const connStatus = el("receiver-connection-status");
-  setStatus(connStatus, "🔒 Verbunden — warte auf Dateien...", "ok");
-
-  const receiver = new FileReceiver(channel);
-  _activeReceiver = receiver;
-  receiver.requireConfirmation = true;
-
-  receiver.onKeyFingerprint = (fp) => {
-    el("receiver-sas-emoji").textContent = fp;
-    show("receiver-sas");
-  };
-
-  receiver.onHeaderReceived = (files: TransferFileInfo[]) => {
-    const list = el("receiver-incoming-files");
-    const totalSize = files.reduce((n, f) => n + f.size, 0);
-    list.innerHTML = files
-      .map(f => `<div class="file-item"><span class="file-name">${esc(f.name)}</span><span class="file-size">${formatBytes(f.size)}</span></div>`)
-      .join("") + `<p class="file-total">Gesamt: ${formatBytes(totalSize)}</p>`;
-    show("receiver-confirm");
-  };
-
-  receiver.onProgress = (done, total, bps) => {
-    const eta = bps > 0 && done < total ? ` — noch ${formatEta((total - done) / bps)}` : "";
-    setProgress(
-      "receiver-progress-bar", "receiver-progress-label",
-      done / total,
-      `${formatBytes(done)} / ${formatBytes(total)} — ${formatSpeed(bps)}${eta}`,
-    );
-  };
-
-  receiver.onFilesReady = (files: DownloadableFile[]) => {
-    setProgress("receiver-progress-bar", "receiver-progress-label", 1, "✓ Empfangen & verifiziert");
-    setStatus(connStatus, "✅ Integrität bestätigt (Merkle root stimmt überein)", "ok");
-    hide("btn-cancel-receiver");
-    showDownloads(files);
-  };
-
-  receiver.onError = (e) => {
-    setStatus(connStatus, `❌ ${e.message}`, "error");
-    hide("btn-cancel-receiver");
-  };
-
-  receiver.receive();
-}
+// ── Downloads ─────────────────────────────────────────────────────────────────
 
 function showDownloads(files: DownloadableFile[]): void {
   const area = el("download-area");
@@ -346,46 +343,4 @@ function showDownloads(files: DownloadableFile[]): void {
   }
 
   area.hidden = false;
-}
-
-// ── Reset helpers ─────────────────────────────────────────────────────────────
-
-function resetSender(): void {
-  _activeSender = null;
-  show("sender-step-files");
-  hide("sender-step-code");
-  hide("sender-step-transfer");
-  el("sender-sas-emoji").textContent = "";
-  el("sender-sas").hidden = true;
-  el("btn-cancel-sender").hidden = false;
-  const input = document.getElementById("file-input") as HTMLInputElement;
-  if (input) input.value = "";
-  const list = document.getElementById("file-list");
-  if (list) { list.innerHTML = ""; list.hidden = true; }
-  const btn = document.getElementById("btn-connect-sender") as HTMLButtonElement;
-  if (btn) btn.disabled = true;
-}
-
-function resetReceiver(): void {
-  _activeReceiver = null;
-  show("receiver-step-code");
-  hide("receiver-step-transfer");
-  el("receiver-confirm").hidden = true;
-  el("receiver-progress").hidden = true;
-  el("receiver-sas-emoji").textContent = "";
-  el("receiver-sas").hidden = true;
-  el("receiver-incoming-files").innerHTML = "";
-  el("btn-cancel-receiver").hidden = false;
-  const input = document.getElementById("code-input") as HTMLInputElement;
-  if (input) input.value = "";
-  const btn = document.getElementById("btn-connect-receiver") as HTMLButtonElement;
-  if (btn) btn.disabled = false;
-  const err = document.getElementById("receiver-error");
-  if (err) err.hidden = true;
-  const area = document.getElementById("download-area");
-  if (area) { area.innerHTML = ""; area.hidden = true; }
-}
-
-function esc(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }

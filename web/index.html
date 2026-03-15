@@ -22,29 +22,12 @@
         <p class="tagline">Ende-zu-Ende verschlüsselt · Browser zu Browser · Kein Server</p>
       </header>
 
-      <!-- WASM loading indicator (hidden once ready) -->
+      <!-- WASM loading indicator — hidden once ready -->
       <div id="wasm-loading" class="status loading">Lädt Krypto-Modul...</div>
 
-      <!-- ── Mode selection ───────────────────────────────────────────── -->
-      <section id="mode-select" class="card" hidden>
-        <div class="mode-buttons">
-          <button id="btn-sender" class="mode-btn">
-            <span class="mode-icon">📤</span>
-            <span>Datei senden</span>
-          </button>
-          <button id="btn-receiver" class="mode-btn">
-            <span class="mode-icon">📥</span>
-            <span>Datei empfangen</span>
-          </button>
-        </div>
-      </section>
-
-      <!-- ── Sender flow ──────────────────────────────────────────────── -->
+      <!-- ── Sender ─────────────────────────────────────────────────────── -->
       <section id="sender-view" class="card" hidden>
-        <div class="card-header">
-          <h2>Datei senden</h2>
-          <button id="sender-back" class="back-btn" title="Zurück">← Zurück</button>
-        </div>
+        <h2>📤 Datei senden</h2>
 
         <!-- Step 1: File selection -->
         <div id="sender-step-files">
@@ -88,12 +71,9 @@
         </div>
       </section>
 
-      <!-- ── Receiver flow ────────────────────────────────────────────── -->
+      <!-- ── Receiver ───────────────────────────────────────────────────── -->
       <section id="receiver-view" class="card" hidden>
-        <div class="card-header">
-          <h2>Datei empfangen</h2>
-          <button id="receiver-back" class="back-btn" title="Zurück">← Zurück</button>
-        </div>
+        <h2>📥 Datei empfangen</h2>
 
         <!-- Step 1: Enter code -->
         <div id="receiver-step-code">
@@ -115,7 +95,7 @@
         <div id="receiver-step-transfer" hidden>
           <div id="receiver-connection-status" class="status ok">🔒 Verbunden — Ende-zu-Ende verschlüsselt</div>
 
-          <!-- Confirmation panel (shown after header arrives) -->
+          <!-- Confirmation panel -->
           <div id="receiver-confirm" hidden>
             <p class="step-label">Eingehende Dateien:</p>
             <div id="receiver-incoming-files"></div>
@@ -127,7 +107,7 @@
             <button id="btn-accept-transfer" class="primary">✓ Dateien annehmen</button>
           </div>
 
-          <!-- Progress (shown after confirmation) -->
+          <!-- Progress -->
           <div id="receiver-progress" hidden>
             <div class="progress-bar-wrap">
               <div id="receiver-progress-bar" class="progress-bar" role="progressbar"
