@@ -149,9 +149,14 @@ export class FileSender {
 
   private queue = new MsgQueue();
   private cancelled = false;
+  private readonly channels: RTCDataChannel[];
+  private readonly ctrl: RTCDataChannel; // channel 0 — control messages
 
-  constructor(private readonly channel: RTCDataChannel) {
-    channel.onmessage = (e) => this.queue.push(e.data as ArrayBuffer);
+  constructor(channels: RTCDataChannel[]) {
+    this.channels = channels;
+    this.ctrl = channels[0];
+    // Only control messages (PUBKEY, ACK, ERROR) arrive from the receiver
+    this.ctrl.onmessage = (e) => this.queue.push(e.data as ArrayBuffer);
   }
 
   cancel(): void {
@@ -164,7 +169,7 @@ export class FileSender {
     } catch (err) {
       const e = err instanceof Error ? err : new Error(String(err));
       if (!this.cancelled) {
-        try { this.channel.send(pack(MsgType.ERROR, new TextEncoder().encode(e.message))); } catch { /* ignore */ }
+        try { this.ctrl.send(pack(MsgType.ERROR, new TextEncoder().encode(e.message))); } catch { /* ignore */ }
       }
       this.onError?.(e);
       throw e;
@@ -173,10 +178,12 @@ export class FileSender {
 
   private async _run(files: File[]): Promise<void> {
     const wasm = getCryptoModule();
+    const { channels, ctrl } = this;
+    const chanCount = channels.length;
 
     // ── 1. Key exchange ──────────────────────────────────────────────────────
     const keypair = new wasm.Keypair();
-    this.channel.send(pack(MsgType.PUBKEY, new Uint8Array(keypair.publicKey)));
+    ctrl.send(pack(MsgType.PUBKEY, new Uint8Array(keypair.publicKey)));
 
     const theirPk = await this.queue.expect(MsgType.PUBKEY);
     const sharedSecret = new Uint8Array(keypair.diffieHellman(theirPk));
@@ -198,9 +205,9 @@ export class FileSender {
       chunkCount: f.size === 0 ? 1 : Math.ceil(f.size / CHUNK_SIZE),
     }));
     const headerJson = new TextEncoder().encode(JSON.stringify(infos));
-    this.channel.send(pack(MsgType.HEADER, salt, headerJson));
+    ctrl.send(pack(MsgType.HEADER, salt, headerJson));
 
-    // ── 3. Chunks ────────────────────────────────────────────────────────────
+    // ── 3. Chunks — round-robin across all DataChannels ──────────────────────
     const totalBytes = Math.max(files.reduce((n, f) => n + f.size, 0), 1);
     let bytesDone = 0;
     const leafHashes: Uint8Array[] = [];
@@ -222,8 +229,9 @@ export class FileSender {
         const empty = new Uint8Array(0);
         const cipher = new Uint8Array(wasm.encryptChunk(encKey, nonceSeed, ci, empty));
         leafHashes.push(new Uint8Array(wasm.hashChunk(empty, ci)));
-        await waitForBufferDrain(this.channel);
-        this.channel.send(pack(MsgType.CHUNK, u32le(ci), u32le(fi), cipher));
+        const ch = channels[ci % chanCount];
+        await waitForBufferDrain(ch);
+        ch.send(pack(MsgType.CHUNK, u32le(ci), u32le(fi), cipher));
         ci++;
         continue;
       }
@@ -248,8 +256,9 @@ export class FileSender {
           const cipher = new Uint8Array(wasm.encryptChunk(encKey, nonceSeed, ci, plain));
           leafHashes.push(new Uint8Array(wasm.hashChunk(plain, ci)));
 
-          await waitForBufferDrain(this.channel);
-          this.channel.send(pack(MsgType.CHUNK, u32le(ci), u32le(fi), cipher));
+          const ch = channels[ci % chanCount];
+          await waitForBufferDrain(ch);
+          ch.send(pack(MsgType.CHUNK, u32le(ci), u32le(fi), cipher));
 
           bytesDone += plain.byteLength;
           ci++;
@@ -261,7 +270,7 @@ export class FileSender {
 
     // ── 4. Done — send Merkle root, wait for ACK ─────────────────────────────
     const root = new Uint8Array(wasm.computeMerkleRoot(leafHashes));
-    this.channel.send(pack(MsgType.DONE, root));
+    ctrl.send(pack(MsgType.DONE, root));
     await this.queue.expect(MsgType.ACK, 30_000);
 
     this.onDone?.();
@@ -285,9 +294,14 @@ export class FileReceiver {
   private queue = new MsgQueue();
   private cancelled = false;
   private confirmResolve: (() => void) | null = null;
+  private readonly ctrl: RTCDataChannel; // channel 0 — control messages
 
-  constructor(private readonly channel: RTCDataChannel) {
-    channel.onmessage = (e) => this.queue.push(e.data as ArrayBuffer);
+  constructor(channels: RTCDataChannel[]) {
+    this.ctrl = channels[0];
+    // Chunks arrive on ANY channel, control messages on channel 0 → feed all into one queue
+    for (const ch of channels) {
+      ch.onmessage = (e) => this.queue.push(e.data as ArrayBuffer);
+    }
   }
 
   /** Call after onHeaderReceived to start receiving chunks. */
@@ -316,7 +330,7 @@ export class FileReceiver {
     // ── 1. Key exchange ──────────────────────────────────────────────────────
     const senderPk = await this.queue.expect(MsgType.PUBKEY);
     const keypair  = new wasm.Keypair();
-    this.channel.send(pack(MsgType.PUBKEY, new Uint8Array(keypair.publicKey)));
+    this.ctrl.send(pack(MsgType.PUBKEY, new Uint8Array(keypair.publicKey)));
 
     const sharedSecret = new Uint8Array(keypair.diffieHellman(senderPk));
 
@@ -373,12 +387,12 @@ export class FileReceiver {
     const ourRoot     = new Uint8Array(wasm.computeMerkleRoot(leafHashes));
 
     if (!senderRoot.every((b, i) => b === ourRoot[i])) {
-      this.channel.send(pack(MsgType.ERROR, new TextEncoder().encode("Merkle root mismatch")));
+      this.ctrl.send(pack(MsgType.ERROR, new TextEncoder().encode("Merkle root mismatch")));
       throw new Error("Integritätsfehler — Merkle root stimmt nicht überein");
     }
 
     // ── 5. Assemble files + send ACK ─────────────────────────────────────────
-    this.channel.send(pack(MsgType.ACK));
+    this.ctrl.send(pack(MsgType.ACK));
 
     let startChunk = 0;
     const downloads: DownloadableFile[] = infos.map(info => {

@@ -33,20 +33,23 @@ const ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun1.l.google.com:19302" },
 ];
 
+/** Number of parallel DataChannels (SCTP streams) for chunk transfer. */
+const CHANNEL_COUNT = 4;
+
 export class ConnectionManager {
   private signaling = new SignalingClient();
   private pc: RTCPeerConnection | null = null;
-  private _channel: RTCDataChannel | null = null;
+  private _channels: RTCDataChannel[] = [];
   private _state: AppState = "idle";
 
   onStateChange: ((state: AppState, detail?: string) => void) | null = null;
-  /** Called when the DataChannel is open and ready for binary data. */
-  onChannelOpen: ((channel: RTCDataChannel) => void) | null = null;
+  /** Called when all DataChannels are open and ready for binary data. */
+  onChannelOpen: ((channels: RTCDataChannel[]) => void) | null = null;
   /** Called when the remote peer disconnects. */
   onPeerDisconnected: (() => void) | null = null;
 
   get state(): AppState { return this._state; }
-  get channel(): RTCDataChannel | null { return this._channel; }
+  get channels(): RTCDataChannel[] { return this._channels; }
 
   // ── Sender ──────────────────────────────────────────────────────────────
 
@@ -80,10 +83,10 @@ export class ConnectionManager {
 
   disconnect(): void {
     this.signaling.disconnect();
-    this._channel?.close();
+    for (const ch of this._channels) ch.close();
     this.pc?.close();
     this.pc = null;
-    this._channel = null;
+    this._channels = [];
     this.setState("closed");
   }
 
@@ -92,16 +95,28 @@ export class ConnectionManager {
   private async runSender(): Promise<void> {
     const pc = this.createPC();
 
-    // Create DataChannel before offer (so it's included in the SDP)
-    const channel = pc.createDataChannel("securedrop", { ordered: true });
-    channel.binaryType = "arraybuffer";
-    this._channel = channel;
+    // Create multiple unordered DataChannels before offer (so they're included in the SDP).
+    // ordered: false eliminates SCTP head-of-line blocking — chunks carry their own index
+    // so the receiver can reassemble regardless of arrival order.
+    const channels: RTCDataChannel[] = [];
+    let openCount = 0;
 
-    channel.onopen = () => {
-      this.setState("connected");
-      this.onChannelOpen?.(channel);
-    };
-    channel.onclose = () => this.setState("closed");
+    for (let i = 0; i < CHANNEL_COUNT; i++) {
+      const ch = pc.createDataChannel(`sd-${i}`, { ordered: false });
+      ch.binaryType = "arraybuffer";
+      channels.push(ch);
+
+      ch.onopen = () => {
+        if (++openCount === CHANNEL_COUNT) {
+          this._channels = channels;
+          this.setState("connected");
+          this.onChannelOpen?.(channels);
+        }
+      };
+      ch.onclose = () => {
+        if (this._state === "connected") this.setState("closed");
+      };
+    }
 
     // Sender receives answer + ICE from receiver
     this.signaling.onAnswer = async (sdp) => {
@@ -122,17 +137,27 @@ export class ConnectionManager {
   private async runReceiver(): Promise<void> {
     const pc = this.createPC();
 
-    // DataChannel arrives from sender
-    pc.ondatachannel = (event) => {
-      const channel = event.channel;
-      channel.binaryType = "arraybuffer";
-      this._channel = channel;
+    // Collect DataChannels as they arrive from the sender
+    const channels: RTCDataChannel[] = [];
+    let openCount = 0;
 
-      channel.onopen = () => {
-        this.setState("connected");
-        this.onChannelOpen?.(channel);
+    pc.ondatachannel = (event) => {
+      const ch = event.channel;
+      ch.binaryType = "arraybuffer";
+      channels.push(ch);
+
+      ch.onopen = () => {
+        if (++openCount === CHANNEL_COUNT) {
+          // Sort by label so sd-0 is first (control channel)
+          channels.sort((a, b) => a.label.localeCompare(b.label));
+          this._channels = channels;
+          this.setState("connected");
+          this.onChannelOpen?.(channels);
+        }
       };
-      channel.onclose = () => this.setState("closed");
+      ch.onclose = () => {
+        if (this._state === "connected") this.setState("closed");
+      };
     };
 
     // Receiver receives offer + ICE from sender

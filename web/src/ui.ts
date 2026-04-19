@@ -163,14 +163,14 @@ function initSenderCard(): void {
     }
   };
 
-  mgr.onChannelOpen = (channel) => {
+  mgr.onChannelOpen = (channels) => {
     hide("sender-step-code");
     show("sender-step-transfer");
 
     const connStatus = el("sender-connection-status");
     setStatus(connStatus, "🔒 Verbunden — E2E verschlüsselt", "ok");
 
-    const sender = new FileSender(channel);
+    const sender = new FileSender(channels);
     activeSender = sender;
 
     sender.onKeyFingerprint = (fp) => {
@@ -274,14 +274,14 @@ function initReceiverCard(): void {
     }
   };
 
-  mgr.onChannelOpen = (channel) => {
+  mgr.onChannelOpen = (channels) => {
     hide("receiver-step-code");
     show("receiver-step-transfer");
 
     const connStatus = el("receiver-connection-status");
     setStatus(connStatus, "🔒 Verbunden — warte auf Dateien...", "ok");
 
-    const receiver = new FileReceiver(channel);
+    const receiver = new FileReceiver(channels);
     activeReceiver = receiver;
     receiver.requireConfirmation = true;
 
