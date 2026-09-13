@@ -22,7 +22,7 @@ SafeDrop ist eine browserbasierte P2P-Dateiübertragung mit Ende-zu-Ende-Verschl
   - Code ist nach dem Verbinden nicht wiederverwendbar
 - Routenanzeige gegen Cloudflare-TURN getestet: normal „⚡ Direktverbindung“ (20 MiB, 4,9 MiB/s), mit `?relay` „🔁 Über TURN-Relay“ (2,8 MiB/s). Hash jeweils OK.
 - Durchsatz lokal (headless Chrome, localhost, 100 MiB): alter und neuer Stand gleich, ca. 12 MiB/s.
-- **Unsicher:** Auf einem echten iPhone ist noch nichts getestet. Die neuen Frontend-Änderungen sind noch nicht auf GitHub Pages (nur committet, nicht gepusht).
+- **Unsicher:** Auf einem echten iPhone ist noch nichts getestet.
 
 ## Zuletzt gemacht (2026-09-13)
 
@@ -56,6 +56,8 @@ SafeDrop ist eine browserbasierte P2P-Dateiübertragung mit Ende-zu-Ende-Verschl
   - Routenanzeige direkt/TURN.
   - CSP erlaubt `img-src data:` (Favicon) und `ws://localhost:8787` / `http://localhost:8787` für lokales Signaling.
 - Aufgeräumt: doppelte `ICE_SERVERS` in `web/src/webrtc.ts` entfernt.
+- README aktualisiert: Protokoll mit COMMIT/ACCEPT, beteiligte Server inkl. TURN, lokales Signaling, Deploy und TURN-Secrets, `?relay`, Status Phase 7.
+- Gepusht auf `main`; GitHub Actions deployt das Frontend.
 
 ## Offen
 
@@ -66,10 +68,7 @@ SafeDrop ist eine browserbasierte P2P-Dateiübertragung mit Ende-zu-Ende-Verschl
 2. Große Dateien auf iOS testen (mehrere hundert MB bis GB). Der Empfänger hält alles als Blob im Speicher. Ob Safari das auslagert, ist unklar.
 3. E2E-Tests ins Repo übernehmen. Sie liegen bisher nur in einem temporären Scratchpad und sind nicht versioniert.
 4. `wrangler` als devDependency ins Repo (z. B. `signaling/package.json`); bisher gibt es dort keine `package.json`. Optional Worker-Deploy in CI.
-5. README aktualisieren:
-   - „kein Server sieht je Deine Daten“: mit TURN laufen verschlüsselte Daten ggf. über Cloudflare.
-   - Protokollbeschreibung (COMMIT/ACCEPT).
-   - Phase 7 teilweise erledigt (TURN).
+5. `/ice` absichern: Der Endpoint ist öffentlich (CORS `*`), jeder kann damit TURN-Zugangsdaten abrufen und das TURN-Kontingent mitnutzen (1.000 GB/Monat gratis). Idee: Zugangsdaten nur über den WebSocket an Teilnehmer eines gültigen Raums schicken. Zusätzlich eine Billing-Benachrichtigung bei Cloudflare einrichten.
 6. `npm audit` meldet 4 Schwachstellen (1 moderate, 3 high) in `postcss`, das über Vite reinkommt. Nur Dev-Umgebung, `npm audit fix` noch nicht ausgeführt.
 7. Optional: `Cargo.lock` committen (steht in `.gitignore`), damit WASM-Builds reproduzierbar sind.
 
