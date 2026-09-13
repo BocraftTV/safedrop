@@ -2,11 +2,17 @@
  * Signaling Client — WebSocket connection to the Cloudflare Worker.
  *
  * The worker forwards all messages verbatim between the two peers.
- * Worker-generated messages: "room_created", "peer_joined"
+ * Worker-generated messages: "room_created", "peer_joined", "peer_disconnected", "error"
  * Peer-generated (forwarded): "offer", "answer", "ice_candidate"
  */
 
-export const SIGNALING_URL = "wss://securedrop-signaling.jakob-nuelle.workers.dev";
+export const SIGNALING_URL: string =
+  import.meta.env.VITE_SIGNALING_URL ?? "wss://securedrop-signaling.jakob-nuelle.workers.dev";
+const ICE_URL = SIGNALING_URL.replace(/^ws/, "http") + "/ice";
+
+const FALLBACK_ICE_SERVERS: RTCIceServer[] = [
+  { urls: ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"] },
+];
 
 export type SignalingMessage =
   | { type: "room_created"; code: string }
@@ -17,6 +23,19 @@ export type SignalingMessage =
   | { type: "ice_candidate"; candidate: RTCIceCandidateInit }
   | { type: "error"; message: string };
 
+/**
+ * Fetch ICE servers (STUN + TURN credentials, if the worker has TURN configured).
+ * Falls back to public STUN servers if the request fails or takes too long.
+ */
+export async function fetchIceServers(timeoutMs = 2500): Promise<RTCIceServer[]> {
+  try {
+    const res = await fetch(ICE_URL, { signal: AbortSignal.timeout(timeoutMs) });
+    const data = (await res.json()) as { iceServers?: RTCIceServer[] };
+    if (Array.isArray(data.iceServers) && data.iceServers.length) return data.iceServers;
+  } catch { /* fall through */ }
+  return FALLBACK_ICE_SERVERS;
+}
+
 export class SignalingClient {
   private ws: WebSocket | null = null;
 
@@ -26,6 +45,8 @@ export class SignalingClient {
   onOffer: ((sdp: RTCSessionDescriptionInit) => void) | null = null;
   onAnswer: ((sdp: RTCSessionDescriptionInit) => void) | null = null;
   onIceCandidate: ((candidate: RTCIceCandidateInit) => void) | null = null;
+  /** Server-side error (e.g. invalid code) or unexpected connection loss. */
+  onError: ((message: string) => void) | null = null;
 
   /**
    * Connect as sender (no code).
@@ -34,20 +55,23 @@ export class SignalingClient {
    */
   connectAsSender(): Promise<string> {
     return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(SIGNALING_URL);
+      const ws = new WebSocket(SIGNALING_URL);
+      this.ws = ws;
+      let settled = false;
 
-      this.ws.onerror = () => reject(new Error("Signaling: connection failed"));
-      this.ws.onclose = (e) => {
-        if (!e.wasClean) reject(new Error("Signaling: connection closed unexpectedly"));
-      };
+      ws.onerror = () => { if (!settled) { settled = true; reject(new Error("Signaling-Server nicht erreichbar")); } };
+      ws.onclose = () => { if (!settled) { settled = true; reject(new Error("Signaling-Verbindung unerwartet geschlossen")); } };
 
-      this.ws.onmessage = (event) => {
+      ws.onmessage = (event) => {
         const msg = this.parse(event);
         if (!msg) return;
 
-        if (msg.type === "room_created") {
-          // Switch to ongoing message handler, then resolve
-          this.ws!.onmessage = (e) => this.handleOngoing(e);
+        if (msg.type === "error" && !settled) {
+          settled = true;
+          reject(new Error(msg.message));
+        } else if (msg.type === "room_created") {
+          settled = true;
+          this.attachOngoing(ws);
           resolve(msg.code);
         }
       };
@@ -56,20 +80,22 @@ export class SignalingClient {
 
   /**
    * Connect as receiver with a known room code.
-   * Resolves once the WebSocket is open.
+   * Resolves once the WebSocket is open. An invalid code is reported
+   * via onError (the server sends an error message and closes).
    */
   connectAsReceiver(code: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(`${SIGNALING_URL}?code=${code.toLowerCase().trim()}`);
+      const ws = new WebSocket(`${SIGNALING_URL}?code=${encodeURIComponent(code.toLowerCase().trim())}`);
+      this.ws = ws;
+      let settled = false;
 
-      this.ws.onopen = () => {
-        this.ws!.onmessage = (e) => this.handleOngoing(e);
+      ws.onopen = () => {
+        settled = true;
+        this.attachOngoing(ws);
         resolve();
       };
-      this.ws.onerror = () => reject(new Error("Signaling: connection failed — is the code correct?"));
-      this.ws.onclose = (e) => {
-        if (!e.wasClean) reject(new Error("Signaling: connection closed unexpectedly"));
-      };
+      ws.onerror = () => { if (!settled) { settled = true; reject(new Error("Signaling-Server nicht erreichbar")); } };
+      ws.onclose = () => { if (!settled) { settled = true; reject(new Error("Signaling-Verbindung unerwartet geschlossen")); } };
     });
   }
 
@@ -86,8 +112,27 @@ export class SignalingClient {
   }
 
   disconnect(): void {
-    this.ws?.close(1000, "done");
+    const ws = this.ws;
     this.ws = null;
+    if (ws) {
+      ws.onclose = null;
+      ws.onerror = null;
+      ws.onmessage = null;
+      ws.close(1000, "done");
+    }
+  }
+
+  private attachOngoing(ws: WebSocket): void {
+    ws.onmessage = (e) => this.handleOngoing(e);
+    ws.onerror = null;
+    ws.onclose = (e) => {
+      if (this.ws !== ws) return;
+      this.ws = null;
+      // 4001 = rejected by server; the error message was already delivered
+      if (e.code !== 1000 && e.code !== 4001) {
+        this.onError?.(e.code === 4000 ? "Code abgelaufen" : "Verbindung zum Signaling-Server verloren");
+      }
+    };
   }
 
   private handleOngoing(event: MessageEvent): void {
@@ -100,6 +145,7 @@ export class SignalingClient {
       case "offer":             this.onOffer?.(msg.sdp); break;
       case "answer":            this.onAnswer?.(msg.sdp); break;
       case "ice_candidate":     this.onIceCandidate?.(msg.candidate); break;
+      case "error":             this.onError?.(msg.message); break;
     }
   }
 

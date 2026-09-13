@@ -1,12 +1,7 @@
 /**
- * WebRTC types and helpers shared across the app.
+ * WebRTC helpers shared across the app.
  * The actual connection logic lives in connection.ts.
  */
-
-export const ICE_SERVERS: RTCIceServer[] = [
-  { urls: "stun:stun.l.google.com:19302" },
-  { urls: "stun:stun1.l.google.com:19302" },
-];
 
 /**
  * Backpressure thresholds for the DataChannel send buffer.
